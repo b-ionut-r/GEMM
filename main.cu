@@ -1,16 +1,15 @@
-#include "step_1.cu"
-#include "step_2.cu"
-#include "step_3.cu"
-
+#include <iostream>
+#include "steps.h"
 
 int main() {
     int n;
     std::cout << "Profile for version: ";
     std::cin >> n;
     switch (n) {
-        case 1: step_1();
-        case 2: step_2();
-        case 3: step_3();
+        case 1: step_1(); break;
+        case 2: step_2(); break;
+        case 3: step_3(); break;
+        case 4: step_4(); break;
         default: ;
     }
 }

@@ -11,7 +11,7 @@ constexpr int BLOCKSIZE=32;
  * @param B  (float): KxN input matrix
  * @param C  (float): MxN output matrix
  */
-__global__ void warp_coallesced_gemm(int M, int N, int K,
+__global__ void warp_coallesced_gemm(int M, int K, int N,
                      float alpha, const float *A, const float *B,
                      float beta, float *C) {
     const unsigned int m = blockIdx.x * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
@@ -42,7 +42,7 @@ void step_2() {
     dim3 blockDim(BLOCKSIZE * BLOCKSIZE);
     dim3 gridDim((M+BLOCKSIZE)/BLOCKSIZE, (N+BLOCKSIZE)/BLOCKSIZE);
 
-    warp_coallesced_gemm<<<gridDim, blockDim>>>(M, N, K, 1.0, A, B, 0.0, C);
+    warp_coallesced_gemm<<<gridDim, blockDim>>>(M, K, N, 1.0, A, B, 0.0, C);
     cudaDeviceSynchronize();
     for (int i = 0; i <10; ++i) {
         std::cout << C[i] << " ";

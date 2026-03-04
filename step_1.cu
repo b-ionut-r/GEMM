@@ -9,7 +9,7 @@
  * B (float): KxN 2D matrix
  * C (float): MxN 2D matrix
 */
-__global__ void naive_gemm(int M, int N, int K,
+__global__ void naive_gemm(int M, int K, int N,
                      float alpha, const float *A, const float *B,
                      float beta, float *C) {
     // this thread will compute C[i][j]
@@ -43,7 +43,7 @@ void step_1() {
     }
     dim3 blockDim(32, 32, 1);
     dim3 gridDim((M + 31) / 32, (N + 31) / 32, 1);
-    naive_gemm<<<gridDim, blockDim>>>(M, N, K, 1, A, B, 0, C);
+    naive_gemm<<<gridDim, blockDim>>>(M, K, N, 1, A, B, 0, C);
     cudaDeviceSynchronize();
     for (int i = 0; i <10; ++i) {
         std::cout << C[i] << " ";

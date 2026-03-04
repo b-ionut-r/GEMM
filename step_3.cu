@@ -83,7 +83,7 @@ void step_3() {
     dim3 blockDim(BLOCKSIZE * BLOCKSIZE);
     dim3 gridDim((M+BLOCKSIZE-1)/BLOCKSIZE, (N+BLOCKSIZE-1)/BLOCKSIZE);
 
-    tiled_shared_gemm<<<gridDim, blockDim>>>(M, N, K, 1.0, A, B, 0.0, C);
+    tiled_shared_gemm<<<gridDim, blockDim>>>(M, K, N, 1.0, A, B, 0.0, C);
     cudaDeviceSynchronize();
     for (int i = 0; i <10; ++i) {
         std::cout << C[i] << " ";
