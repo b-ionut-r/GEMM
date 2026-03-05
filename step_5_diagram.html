@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Kernel 5 — 2D Blocktiling SGEMM</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Space+Grotesk:wght@300;500;700&display=swap');
+
+  :root {
+    --bg: #0b0e14;
+    --surface: #131720;
+    --border: #1e2535;
+    --accent-a: #3b82f6;
+    --accent-b: #f97316;
+    --accent-c: #22c55e;
+    --accent-reg: #a855f7;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --smem: #1e3a5f;
+    --smem-border: #3b82f6;
+    --reg: #2d1b4e;
+    --reg-border: #a855f7;
+    --thread: #1a2e1a;
+    --thread-border: #22c55e;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    padding: 2rem;
+    line-height: 1.6;
+  }
+
+  h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent-a);
+    letter-spacing: 0.05em;
+    margin-bottom: 0.2rem;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 2.5rem;
+  }
+
+  .section-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 2.5rem;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+  }
+  .card-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+  }
+
+  /* ── SVG tiles ── */
+  svg { display: block; overflow: visible; }
+
+  .label-sm {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    fill: var(--muted);
+  }
+  .label-bold {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .label-accent-a { fill: #3b82f6; }
+  .label-accent-b { fill: #f97316; }
+  .label-accent-c { fill: #22c55e; }
+  .label-accent-reg { fill: #a855f7; }
+
+  /* ── Thread decomposition diagram ── */
+  .thread-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 2px;
+    width: 100%;
+    aspect-ratio: 1;
+  }
+  .thread-cell {
+    background: #1a2535;
+    border: 1px solid #1e2535;
+    border-radius: 2px;
+    aspect-ratio: 1;
+    transition: background 0.15s;
+  }
+  .thread-cell.highlight {
+    background: #1b3a5c;
+    border-color: #3b82f6;
+  }
+  .thread-cell.active {
+    background: #1a2e1a;
+    border-color: #22c55e;
+  }
+
+  /* ── Outer product layout ── */
+  .outer-product {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    justify-content: center;
+  }
+
+  .vec-col {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .vec-row {
+    display: flex;
+    flex-direction: row;
+    gap: 3px;
+  }
+  .cell {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    border: 1px solid;
+  }
+  .cell-a {
+    background: #1e3050;
+    border-color: #3b82f6;
+    color: #93c5fd;
+  }
+  .cell-b {
+    background: #3a1a08;
+    border-color: #f97316;
+    color: #fdba74;
+  }
+  .cell-c {
+    background: #0f1f10;
+    border-color: #22c55e;
+    color: #86efac;
+  }
+  .cell-empty {
+    background: transparent;
+    border-color: transparent;
+    color: transparent;
+  }
+
+  .op-symbol {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.3rem;
+    color: var(--muted);
+    padding: 0 0.25rem;
+  }
+
+  /* ── Formula block ── */
+  .formula {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    color: #94a3b8;
+    margin-top: 1rem;
+  }
+  .formula .hl-a { color: #60a5fa; }
+  .formula .hl-b { color: #fb923c; }
+  .formula .hl-c { color: #4ade80; }
+  .formula .hl-r { color: #c084fc; }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-top: 1rem;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    border: 1px solid;
+  }
+
+  /* ── Index equations ── */
+  .eq-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+  }
+  .eq {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+  }
+  .eq-lhs { color: #c084fc; min-width: 90px; }
+  .eq-rhs { color: #e2e8f0; }
+  .eq-comment { color: #475569; font-size: 0.68rem; }
+
+  .full-width { grid-column: 1 / -1; }
+
+  /* Arrows via CSS — simple approach */
+  .arrow-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.75rem 0;
+    font-size: 0.78rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--muted);
+  }
+  .arrow-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.72rem;
+  }
+  .arrow-box.a { border-color: #3b82f6; color: #60a5fa; }
+  .arrow-box.b { border-color: #f97316; color: #fb923c; }
+  .arrow-box.c { border-color: #22c55e; color: #4ade80; }
+  .arrow-box.r { border-color: #a855f7; color: #c084fc; }
+  .arrow { color: #334155; }
+</style>
+</head>
+<body>
+
+<h1>Kernel 5 — 2D Blocktiling SGEMM</h1>
+<p class="subtitle">BM=64, BN=64, BK=8, TM=8, TN=8 · 64 threads/block · C = αAB + βC</p>
+
+<!-- ═══════════════════════════════════════════════ SECTION 1: TILING HIERARCHY -->
+<div class="section-title">§1 · Tile Hierarchy</div>
+<div class="grid-3" style="margin-bottom:2.5rem">
+
+  <!-- A tile -->
+  <div class="card">
+    <div class="card-title label-accent-a">A  (in SMEM)</div>
+    <svg width="100%" viewBox="0 0 160 120">
+      <!-- BM x BK -->
+      <rect x="10" y="10" width="50" height="100" fill="#1e3050" stroke="#3b82f6" stroke-width="1.5" rx="2"/>
+      <text x="35" y="65" text-anchor="middle" class="label-bold label-accent-a">As</text>
+      <!-- dimension labels -->
+      <text x="35" y="8" text-anchor="middle" class="label-sm">BK = 8</text>
+      <text x="4" y="65" text-anchor="middle" class="label-sm" transform="rotate(-90,4,65)">BM = 64</text>
+      <!-- index formula -->
+      <text x="80" y="30" class="label-sm" fill="#94a3b8">As[i·BK + k]</text>
+      <text x="80" y="48" class="label-sm" fill="#64748b">i ∈ [0, BM)</text>
+      <text x="80" y="64" class="label-sm" fill="#64748b">k ∈ [0, BK)</text>
+      <!-- load arrow -->
+      <text x="80" y="88" class="label-sm" fill="#3b82f6">← A[i·K + k]</text>
+      <text x="80" y="102" class="label-sm" fill="#475569">coalesced load</text>
+    </svg>
+    <div class="formula">
+      <span class="hl-a">As[idx]</span> = A[<span class="hl-a">idx/BK</span>·K + <span class="hl-a">idx%BK</span>]
+    </div>
+  </div>
+
+  <!-- B tile -->
+  <div class="card">
+    <div class="card-title label-accent-b">B  (in SMEM)</div>
+    <svg width="100%" viewBox="0 0 160 120">
+      <!-- BK x BN -->
+      <rect x="10" y="40" width="100" height="30" fill="#3a1a08" stroke="#f97316" stroke-width="1.5" rx="2"/>
+      <text x="60" y="60" text-anchor="middle" class="label-bold label-accent-b">Bs</text>
+      <text x="60" y="38" text-anchor="middle" class="label-sm">BN = 64</text>
+      <text x="4" y="57" text-anchor="middle" class="label-sm" transform="rotate(-90,4,57)">BK=8</text>
+      <text x="10" y="90" class="label-sm" fill="#94a3b8">Bs[k·BN + j]</text>
+      <text x="10" y="106" class="label-sm" fill="#64748b">k ∈ [0,BK)  j ∈ [0,BN)</text>
+    </svg>
+    <div class="formula">
+      <span class="hl-b">Bs[idx]</span> = B[<span class="hl-b">idx/BN</span>·N + <span class="hl-b">idx%BN</span>]
+    </div>
+  </div>
+
+  <!-- C tile -->
+  <div class="card">
+    <div class="card-title label-accent-c">C block tile (in registers)</div>
+    <svg width="100%" viewBox="0 0 160 120">
+      <!-- BM x BN block -->
+      <rect x="10" y="10" width="100" height="100" fill="#0b1a0c" stroke="#22c55e" stroke-width="1.5" rx="2" stroke-dasharray="4,3"/>
+      <!-- 8x8 grid of TM x TN thread tiles (conceptual) -->
+      <line x1="10" y1="22.5" x2="110" y2="22.5" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="10" y1="35" x2="110" y2="35" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="10" y1="47.5" x2="110" y2="47.5" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="10" y1="60" x2="110" y2="60" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="10" y1="72.5" x2="110" y2="72.5" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="10" y1="85" x2="110" y2="85" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="10" y1="97.5" x2="110" y2="97.5" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="22.5" y1="10" x2="22.5" y2="110" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="35" y1="10" x2="35" y2="110" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="47.5" y1="10" x2="47.5" y2="110" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="60" y1="10" x2="60" y2="110" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="72.5" y1="10" x2="72.5" y2="110" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="85" y1="10" x2="85" y2="110" stroke="#1a3a1a" stroke-width="0.5"/>
+      <line x1="97.5" y1="10" x2="97.5" y2="110" stroke="#1a3a1a" stroke-width="0.5"/>
+      <!-- highlight one thread's tile -->
+      <rect x="35" y="35" width="12.5" height="12.5" fill="#1a4a1a" stroke="#22c55e" stroke-width="1.5" rx="1"/>
+      <text x="41.25" y="44" text-anchor="middle" font-size="6" fill="#4ade80" font-family="JetBrains Mono,monospace">t</text>
+      <text x="60" y="8" text-anchor="middle" class="label-sm">BN = 64</text>
+      <text x="4" y="62" text-anchor="middle" class="label-sm" transform="rotate(-90,4,62)">BM = 64</text>
+      <text x="120" y="44" class="label-sm" fill="#22c55e">TN=8</text>
+      <text x="120" y="57" class="label-sm" fill="#22c55e">TM=8</text>
+      <text x="120" y="70" class="label-sm" fill="#475569">per thread</text>
+    </svg>
+    <div class="formula">
+      <span class="hl-c">BM·BN/(TM·TN)</span> = 64·64/(8·8) = <span class="hl-c">64 threads</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ SECTION 2: THREAD INDEXING -->
+<div class="section-title">§2 · Thread Index Decomposition</div>
+<div class="grid-2" style="margin-bottom:2.5rem">
+
+  <div class="card">
+    <div class="card-title label-accent-reg">threadIdx → (threadRow, threadCol)</div>
+    <div class="eq-list">
+      <div class="eq">
+        <span class="eq-lhs">threadRow</span>
+        <span class="eq-rhs">= threadIdx.x / (BN/TN)</span>
+        <span class="eq-comment">// = threadIdx.x / 8</span>
+      </div>
+      <div class="eq">
+        <span class="eq-lhs">threadCol</span>
+        <span class="eq-rhs">= threadIdx.x % (BN/TN)</span>
+        <span class="eq-comment">// = threadIdx.x % 8</span>
+      </div>
+    </div>
+    <div style="height:0.75rem"></div>
+    <div class="formula">
+      64 threads laid out as <span class="hl-r">8 rows × 8 cols</span><br>
+      each owning a <span class="hl-c">TM×TN = 8×8</span> register tile<br>
+      tiling the full <span class="hl-c">BM×BN = 64×64</span> C block
+    </div>
+    <div style="height:0.75rem"></div>
+    <!-- 8x8 thread grid visual -->
+    <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px;max-width:200px;margin:0 auto">
+      <script>document.currentScript.outerHTML=""</script>
+      <!-- generated via inline JS below -->
+    </div>
+    <svg width="100%" viewBox="0 0 200 200">
+      <!-- 8x8 thread layout -->
+      <text x="100" y="12" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#64748b">threadCol →</text>
+      <text x="12" y="100" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9" fill="#64748b" transform="rotate(-90,12,100)">threadRow ↓</text>
+      <g transform="translate(24,20)">
+        <!-- draw 8x8 grid -->
+        <script>
+          var s = document.currentScript;
+          var svg = s.closest('svg');
+          var g = svg.querySelector('g');
+          for(var r=0;r<8;r++){for(var c=0;c<8;c++){
+            var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+            var highlight = (r===2&&c===3);
+            rect.setAttribute('x', c*21); rect.setAttribute('y', r*21);
+            rect.setAttribute('width',19); rect.setAttribute('height',19);
+            rect.setAttribute('rx',2);
+            rect.setAttribute('fill', highlight?'#1a4a1a':'#131a28');
+            rect.setAttribute('stroke', highlight?'#22c55e':'#1e2535');
+            rect.setAttribute('stroke-width','1');
+            g.appendChild(rect);
+            if(highlight){
+              var tx = document.createElementNS('http://www.w3.org/2000/svg','text');
+              tx.setAttribute('x', c*21+9.5); tx.setAttribute('y', r*21+13);
+              tx.setAttribute('text-anchor','middle');
+              tx.setAttribute('font-family','JetBrains Mono,monospace');
+              tx.setAttribute('font-size','8');
+              tx.setAttribute('fill','#4ade80');
+              tx.textContent = '19';
+              g.appendChild(tx);
+            }
+          }}
+        </script>
+        <!-- static fallback -->
+        <!-- threadRow=2, threadCol=3 → threadIdx = 2*8+3 = 19 highlighted -->
+      </g>
+      <text x="100" y="195" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="8" fill="#475569">thread 19 = row 2, col 3 (highlighted)</text>
+    </svg>
+  </div>
+
+  <div class="card">
+    <div class="card-title label-accent-c">C tile addressing (writeback)</div>
+    <div class="eq-list">
+      <div class="eq">
+        <span class="eq-lhs" style="min-width:60px">row_C</span>
+        <span class="eq-rhs">= TM · threadRow + i</span>
+        <span class="eq-comment">// i ∈ [0, TM)</span>
+      </div>
+      <div class="eq">
+        <span class="eq-lhs" style="min-width:60px">col_C</span>
+        <span class="eq-rhs">= TN · threadCol + j</span>
+        <span class="eq-comment">// j ∈ [0, TN)</span>
+      </div>
+      <div class="eq">
+        <span class="eq-lhs" style="min-width:60px">C[…]</span>
+        <span class="eq-rhs">= α·res[i·TN+j] + β·C[…]</span>
+      </div>
+    </div>
+    <div style="height:0.75rem"></div>
+    <div class="formula">
+      C pointer is pre-offset to block tile:<br>
+      <span class="hl-c">C += blockIdx.x·BM·N + blockIdx.y·BN</span><br><br>
+      Final index within block:<br>
+      <span class="hl-c">C[(TM·threadRow + i)·N + (TN·threadCol + j)]</span>
+    </div>
+    <div style="height:0.75rem"></div>
+    <!-- pointer advancement -->
+    <div class="card-title" style="margin-top:0.5rem; color:#64748b; font-size:0.7rem">Pointer advancement per outer loop step</div>
+    <div class="arrow-row">
+      <span class="arrow-box a">A += BK</span>
+      <span class="arrow">→</span>
+      <span style="font-size:0.72rem;color:#475569">slide right BK cols along block row</span>
+    </div>
+    <div class="arrow-row">
+      <span class="arrow-box b">B += BK·N</span>
+      <span class="arrow">→</span>
+      <span style="font-size:0.72rem;color:#475569">slide down BK rows along block col</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ SECTION 3: OUTER PRODUCT -->
+<div class="section-title">§3 · Inner Loop — Outer Product Accumulation</div>
+<div class="card" style="margin-bottom:2.5rem">
+  <div style="display:flex;align-items:flex-start;gap:2rem;flex-wrap:wrap">
+
+    <!-- outer product visual -->
+    <div style="flex:0 0 auto">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:#64748b;margin-bottom:0.5rem;text-align:center">
+        for dotIdx in [0, BK)
+      </div>
+      <div class="outer-product">
+        <!-- col vector regA -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:#60a5fa;margin-bottom:2px">regA[TM]</div>
+          <div class="cell cell-a">a₀</div>
+          <div class="cell cell-a">a₁</div>
+          <div class="cell cell-a">a₂</div>
+          <div class="cell cell-a">a₃</div>
+          <div class="cell cell-a">a₄</div>
+          <div class="cell cell-a">a₅</div>
+          <div class="cell cell-a">a₆</div>
+          <div class="cell cell-a">a₇</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.6rem;color:#475569;margin-top:4px">col(As, k)</div>
+        </div>
+
+        <!-- ⊗ symbol -->
+        <div style="display:flex;flex-direction:column;align-items:center;padding-top:2rem">
+          <span style="font-size:1.6rem;color:#334155">⊗</span>
+        </div>
+
+        <!-- row vector regB -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:#fb923c;margin-bottom:2px">regB[TN]</div>
+          <div style="display:flex;gap:2px">
+            <div class="cell cell-b">b₀</div>
+            <div class="cell cell-b">b₁</div>
+            <div class="cell cell-b">b₂</div>
+            <div class="cell cell-b">b₃</div>
+            <div class="cell cell-b">b₄</div>
+            <div class="cell cell-b">b₅</div>
+            <div class="cell cell-b">b₆</div>
+            <div class="cell cell-b">b₇</div>
+          </div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.6rem;color:#475569;margin-top:4px">row(Bs, k)</div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;align-items:center;padding-top:2rem">
+          <span style="font-size:1.2rem;color:#334155">=</span>
+        </div>
+
+        <!-- result TM x TN tile -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:#4ade80;margin-bottom:2px">threadResults[TM×TN]</div>
+          <div style="display:grid;grid-template-columns:repeat(8,32px);gap:2px">
+            <!-- 8 rows of 8 -->
+            <div class="cell cell-c" style="font-size:7px">0,0</div><div class="cell cell-c" style="font-size:7px">0,1</div><div class="cell cell-c" style="font-size:7px">0,2</div><div class="cell cell-c" style="font-size:7px">0,3</div><div class="cell cell-c" style="font-size:7px">0,4</div><div class="cell cell-c" style="font-size:7px">0,5</div><div class="cell cell-c" style="font-size:7px">0,6</div><div class="cell cell-c" style="font-size:7px">0,7</div>
+            <div class="cell cell-c" style="font-size:7px">1,0</div><div class="cell cell-c" style="font-size:7px">1,1</div><div class="cell cell-c" style="opacity:0.3;font-size:7px">…</div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="font-size:7px">1,7</div>
+            <div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div>
+            <div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div>
+            <div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div>
+            <div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div>
+            <div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div>
+            <div class="cell cell-c" style="font-size:7px">7,0</div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="opacity:0.3"></div><div class="cell cell-c" style="font-size:7px">7,7</div>
+          </div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.6rem;color:#475569;margin-top:4px">+= aᵢ · bⱼ  accumulated over BK steps</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- equations -->
+    <div style="flex:1;min-width:260px">
+      <div class="card-title" style="color:#64748b;font-size:0.7rem">Key identity exploited</div>
+      <div class="formula" style="margin-top:0.5rem;font-size:0.8rem">
+        A @ B = Σₖ <span class="hl-a">col(A,k)</span> ⊗ <span class="hl-b">row(B,k)</span>
+      </div>
+      <div style="height:1rem"></div>
+      <div class="card-title" style="color:#64748b;font-size:0.7rem">SMEM → register loads (inner loop)</div>
+      <div class="eq-list" style="margin-top:0.5rem">
+        <div class="eq">
+          <span class="hl-a" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:#60a5fa">regA[i]</span>
+          <span class="eq-rhs">= As[(threadRow·TM + i)·BK + dotIdx]</span>
+        </div>
+        <div class="eq">
+          <span class="hl-b" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:#fb923c">regB[j]</span>
+          <span class="eq-rhs">= Bs[dotIdx·BN + threadCol·TN + j]</span>
+        </div>
+        <div class="eq">
+          <span class="hl-c" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:#4ade80">res[i·TN+j]</span>
+          <span class="eq-rhs">+= regA[i] · regB[j]</span>
+        </div>
+      </div>
+      <div style="height:1rem"></div>
+      <div class="card-title" style="color:#64748b;font-size:0.7rem">Why registers matter</div>
+      <div class="formula" style="margin-top:0.5rem">
+        Without regA/regB caches:<br>
+        <span style="color:#ef4444">TM·TN = 64 SMEM reads per dotIdx step</span><br><br>
+        With register caching:<br>
+        <span class="hl-c">TM + TN = 16 SMEM reads per dotIdx step</span><br>
+        <span style="color:#475569">4× reduction in SMEM bandwidth</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ SECTION 4: LOOP STRUCTURE -->
+<div class="section-title">§4 · Loop Structure Summary</div>
+<div class="card">
+  <div style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:2;color:#94a3b8">
+    <span style="color:#475569">// outer loop: slide BKxBK tile along K dimension — K/BK = 512 iterations</span><br>
+    <span style="color:#60a5fa">for</span> blckIdx <span style="color:#60a5fa">in</span> [<span style="color:#4ade80">0</span>, K, step=BK):<br>
+    &nbsp;&nbsp;<span style="color:#475569">// all threads cooperatively fill SMEM (BMxBK As, BKxBN Bs)</span><br>
+    &nbsp;&nbsp;load <span style="color:#60a5fa">As</span>[BM×BK], <span style="color:#fb923c">Bs</span>[BK×BN] from global → SMEM<br>
+    &nbsp;&nbsp;<span style="color:#a78bfa">__syncthreads()</span><br><br>
+    &nbsp;&nbsp;<span style="color:#475569">// inner loop: BK outer-product steps</span><br>
+    &nbsp;&nbsp;<span style="color:#60a5fa">for</span> dotIdx <span style="color:#60a5fa">in</span> [<span style="color:#4ade80">0</span>, BK):<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;load <span style="color:#60a5fa">regA</span>[TM] ← col(<span style="color:#60a5fa">As</span>, dotIdx)<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;load <span style="color:#fb923c">regB</span>[TN] ← row(<span style="color:#fb923c">Bs</span>, dotIdx)<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ade80">res</span>[TM×TN] += <span style="color:#60a5fa">regA</span> ⊗ <span style="color:#fb923c">regB</span><br><br>
+    &nbsp;&nbsp;<span style="color:#a78bfa">__syncthreads()</span><br>
+    &nbsp;&nbsp;A += BK &nbsp;&nbsp;<span style="color:#475569">// next tile col</span><br>
+    &nbsp;&nbsp;B += BK·N &nbsp;<span style="color:#475569">// next tile row</span><br><br>
+    <span style="color:#475569">// writeback with α, β scaling</span><br>
+    <span style="color:#60a5fa">for</span> i,j <span style="color:#60a5fa">in</span> [TM×TN]: C[…] = α·<span style="color:#4ade80">res</span>[i·TN+j] + β·C[…]
+  </div>
+</div>
+
+</body>
+</html>
