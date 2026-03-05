@@ -11,7 +11,12 @@
             "path": "step_3.ncu-rep"
         },
         {
+            "is_open": true,
             "path": "step_4.ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "step_5.ncu-rep"
         }
     ],
     "launcher": {
@@ -48,7 +53,7 @@
         "activity/profile/launchskipbeforematchcount": 0,
         "activity/profile/launchskipcount": 0,
         "activity/profile/nvtxincludeexcludeoptions": "",
-        "activity/profile/outputfile": "D:/GEMM/profiling/profiling/step_4",
+        "activity/profile/outputfile": "D:/GEMM/profiling/profiling/step_5",
         "activity/profile/pmsamplingbuffersize": 0,
         "activity/profile/pmsamplinginterval": 0,
         "activity/profile/pmsamplingmaxpasses": 0,
