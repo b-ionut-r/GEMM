@@ -5,3 +5,4 @@ void step_2();
 void step_3();
 void step_4();
 void step_5();
+void step_6();

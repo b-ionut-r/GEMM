@@ -11,6 +11,7 @@ int main() {
         case 3: step_3(); break;
         case 4: step_4(); break;
         case 5: step_5(); break;
+        case 6: step_6(); break;
         default: ;
     }
 }

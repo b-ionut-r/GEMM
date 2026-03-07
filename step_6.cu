@@ -1,5 +1,5 @@
 //
-// Created by Bujor Ionut Raul on 05.03.2026.
+// Created by Bujor Ionut Raul on 07.03.2026.
 //
 
 #include <iostream>
@@ -18,8 +18,13 @@ constexpr int BM=64, BK=8, BN=64, TM=8, TN=8;
 // The kernel is meant to be launched like this:
 // work_2d_gemm<<<dim3(CEIL(M/BM), CEIL(N/BN)), BM*BN/(TM*TN)>>>(M, K, N, alpha, A, B, beta, C);
 
+// Additions:
+// 1) When loading from As(SMEM) to store in regA(LMEM), we cache an entire columns of As for
+// computing the outer product. This load cannot be coallesced.
+// Solution: store As transposed in shared memory.
+// 2) Vectorized float4* load/stores to/from GMEM
 
-__global__ void work_2d_gemm(int M, int K, int N,
+__global__ void float4_work_2d_gemm(int M, int K, int N,
                              float alpha, const float *A, const float *B,
                              float beta, float *C) {
     // blockIdx.x will be blockRow, and blockIdx.y will be blockCol in C
@@ -33,7 +38,7 @@ __global__ void work_2d_gemm(int M, int K, int N,
 
     // Initialize SMEM space to be used by all threads inside this block
     // to compute together the BMxBN tile of C
-    __shared__ float As[BM*BK];
+    __shared__ float As[BK*BM];
     __shared__ float Bs[BK*BN];
 
 
@@ -45,12 +50,24 @@ __global__ void work_2d_gemm(int M, int K, int N,
 
     // Loop in blocks over cols of A, rows of B to accumulate dot product
     for (int blckIdx=0; blckIdx < K; blckIdx += BK) {
-        // Load SMEM As and Bs, carefully, to ensure coallescing
-        for (int idx = threadIdx.x; idx < BM * BK; idx += blockDim.x) {
-            As[idx] = A[idx / BK * K + idx % BK];
+        // Load SMEM As and Bs, carefully, to ensure coallescing.
+        // A transposed.
+        for (int idx = threadIdx.x; idx < BM * (BK / 4); idx += blockDim.x) {
+            const unsigned int row = idx / (BK / 4);
+            const unsigned int col = idx % (BK / 4); // 4 * col is start col in A for gr of 4 cols
+            float4 tmp = reinterpret_cast<const float4*>(&A[row * K + 4 * col])[0];
+            // we can't do direct float4 assignment to As because of the transposition,
+            // so we need to assign each element separately
+            As[(4 * col) * BM + row] = tmp.x;
+            As[(4 * col + 1) * BM + row] = tmp.y;
+            As[(4 * col + 2) * BM + row] = tmp.z;
+            As[(4 * col + 3) * BM + row] = tmp.w;
         }
-        for (int idx = threadIdx.x; idx < BK * BN; idx += blockDim.x) {
-            Bs[idx] = B[idx / BN * N + idx % BN];
+        for (int idx = threadIdx.x; idx < BK * (BN / 4); idx += blockDim.x) {
+            const unsigned int row = idx / (BN / 4);
+            const unsigned int col = idx % (BN / 4);
+            reinterpret_cast<float4*>(&Bs[row * BN + col * 4])[0] =
+                reinterpret_cast<const float4*>(&B[row * N + col * 4])[0];
         }
         __syncthreads();
 
@@ -61,7 +78,7 @@ __global__ void work_2d_gemm(int M, int K, int N,
         for (int dotIdx=0; dotIdx < BK; ++dotIdx) {
             // Load Col(A, dotIdx) and Row(B, dotIdx) into registers
             for (int i=0; i<TM; ++i)
-                regA[i] = As[(threadRow * TM + i) * BK + dotIdx];
+                regA[i] = As[dotIdx * BM + (threadRow * TM + i)]; // swapped from step_5
             for (int j=0; j<TN; ++j)
                 regB[j] = Bs[(dotIdx) * BN + threadCol * TN + j];
             for (int i=0; i<TM; ++i) {
@@ -81,18 +98,23 @@ __global__ void work_2d_gemm(int M, int K, int N,
 
     // Fill in results in C from threadResults, applying alpha and beta
     for (int i=0; i<TM; ++i) {
-        for (int j=0; j<TN; ++j) {
+        for (int j=0; j<TN; j+=4) {
             // C's index will be ith row jth col inside the threadTileRowC block row and the threadTileColC block col
             // TM * threadTileRowC + i gives the row index inside the block, and TN * threadTileColC + j gives the col index inside the block
-            C[(TM * threadRow + i) * N + (TN * threadCol + j)] = alpha * threadResults[i * TN + j]
-                                       + beta * C[(TM * threadRow + i) * N + (TN * threadCol + j)];
+            // using vectorized loads
+            float4 tmp = reinterpret_cast<float4*>(&C[(TM * threadRow + i) * N + (TN * threadCol + j)])[0];
+            tmp.x = alpha * threadResults[i * TN + j] + beta * tmp.x;
+            tmp.y = alpha * threadResults[i * TN + j + 1] + beta * tmp.y;
+            tmp.z = alpha * threadResults[i * TN + j + 2] + beta * tmp.z;
+            tmp.w = alpha * threadResults[i * TN + j + 3] + beta * tmp.w;
+            reinterpret_cast<float4*>(&C[(TM * threadRow + i) * N + (TN * threadCol + j)])[0] = tmp;
         }
     }
 }
 
 
 
-void step_5() {
+void step_6() {
     const int M = 4096, N = 4096, K= 4096;
     float *A, *B, *C;
     cudaMallocManaged(&A, M * K * sizeof(float));
@@ -106,7 +128,7 @@ void step_5() {
     }
     dim3 blockDim(BM * BN / (TM * TN));
     dim3 gridDim((M + BM - 1) / BM, (N + BN -1)/ BN);
-    work_2d_gemm<<<gridDim, blockDim>>>(M, K, N, 1.0f, A, B, 0.0f, C);
+    float4_work_2d_gemm<<<gridDim, blockDim>>>(M, K, N, 1.0f, A, B, 0.0f, C);
     cudaDeviceSynchronize();
     for (int i = 0; i < 10; ++i) {
         std::cout << C[i] << " ";
